@@ -288,8 +288,27 @@ contrib = pd.DataFrame({
 })
 fig = px.bar(contrib, x="Currency", y=["Equity contribution", "After-tax debt contribution"],
              barmode="stack", title="WACC contribution by financing source",
-             labels={"value":"Contribution to WACC","variable":"Capital source"})
-fig.update_layout(template="plotly_white", legend_title="", margin=dict(l=10,r=10,t=50,b=10))
+             labels={"value": "Contribution to WACC", "variable": "Capital source"},
+             color_discrete_sequence=["#0866c2", "#81c6fa"])
+
+# Percentage labels inside each contribution segment.
+fig.update_traces(texttemplate="%{y:.2%}", textposition="inside",
+                  insidetextanchor="middle", textfont=dict(size=15), cliponaxis=False)
+for trace in fig.data:
+    trace.textfont.color = "white" if trace.name == "Equity contribution" else "#17334d"
+
+# Total WACC above each stacked bar.
+for _, item in contrib.iterrows():
+    total = item["Equity contribution"] + item["After-tax debt contribution"]
+    fig.add_annotation(x=item["Currency"], y=total,
+                       text=f"<b>Total WACC: {total:.2%}</b>",
+                       showarrow=False, yshift=16,
+                       font=dict(size=14, color="#10243a"))
+
+fig.update_yaxes(tickformat=".0%", title_text="Contribution to WACC (%)", rangemode="tozero")
+fig.update_layout(template="plotly_white", legend_title="",
+                  margin=dict(l=10, r=10, t=70, b=10),
+                  uniformtext_minsize=11, uniformtext_mode="hide")
 st.plotly_chart(fig, use_container_width=True)
 
 with st.expander("Model assumptions and formulae"):
