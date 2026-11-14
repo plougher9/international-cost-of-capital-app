@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 
@@ -278,7 +279,35 @@ with right:
         Value=lambda x: x["Value"].map(lambda z: f"{z:.2%}" if isinstance(z, float) and z < 1 else f"{z:.2f}" if isinstance(z, float) else z)
     ), hide_index=True, use_container_width=True)
 
-st.markdown('<div class="section-label">03 / Capital structure contribution</div>', unsafe_allow_html=True)
+# Explain the currency translation in WACC percentage points (not an FX gain).
+# Both contribution changes add exactly to foreign WACC minus USD WACC.
+equity_bridge = (1 - debt_weight) * (result["Foreign cost of equity"] - result["USD cost of equity"])
+debt_bridge = debt_weight * (result["Foreign after-tax cost of debt"] - result["USD after-tax cost of debt"])
+bridge_delta = result["Foreign WACC"] - result["USD WACC"]
+
+st.markdown('<div class="section-label">03 / Currency WACC bridge</div>', unsafe_allow_html=True)
+st.caption(f"From USD to {currency}: how the equity and after-tax debt components explain the WACC difference. Changes are in percentage points.")
+bridge = go.Figure(go.Waterfall(
+    x=["USD WACC", "Equity effect", "After-tax debt effect", f"{currency} WACC"],
+    measure=["absolute", "relative", "relative", "total"],
+    y=[result["USD WACC"], equity_bridge, debt_bridge, 0],
+    text=[f"{result['USD WACC']:.2%}", f"{equity_bridge*100:+.2f} pp",
+          f"{debt_bridge*100:+.2f} pp", f"{result['Foreign WACC']:.2%}"],
+    textposition="outside", connector={"line": {"color": "#a9b9c8"}},
+    increasing={"marker": {"color": "#15988e"}},
+    decreasing={"marker": {"color": "#d26b59"}},
+    totals={"marker": {"color": "#173b5b"}},
+))
+bridge.update_layout(
+    template="plotly_white", height=320, showlegend=False,
+    margin=dict(l=10, r=10, t=35, b=15),
+    yaxis=dict(tickformat=".0%", title="WACC"),
+    xaxis=dict(title=""),
+)
+st.plotly_chart(bridge, use_container_width=True)
+st.caption(f"Net currency difference: {bridge_delta*100:+.2f} percentage points. This is a discount-rate conversion, not a projected investment return.")
+
+st.markdown('<div class="section-label">04 / Capital structure contribution</div>', unsafe_allow_html=True)
 contrib = pd.DataFrame({
     "Currency": ["USD", currency],
     "Equity contribution": [(1-debt_weight)*result["USD cost of equity"],
@@ -306,8 +335,8 @@ for _, item in contrib.iterrows():
                        font=dict(size=14, color="#10243a"))
 
 fig.update_yaxes(tickformat=".0%", title_text="Contribution to WACC (%)", rangemode="tozero")
-fig.update_layout(template="plotly_white", legend_title="",
-                  margin=dict(l=10, r=10, t=70, b=10),
+fig.update_layout(template="plotly_white", legend_title="", height=330,
+                  margin=dict(l=10, r=10, t=55, b=5),
                   uniformtext_minsize=11, uniformtext_mode="hide")
 st.plotly_chart(fig, use_container_width=True)
 
@@ -334,6 +363,36 @@ with st.expander("Model assumptions and formulae"):
     The selected statutory tax rate, ERP, target debt share and levered beta are held constant across both currency calculations. Government bond yields are used as risk-free proxies. The conversion method follows the class-slide relative-PPP / equal-real-rate assumption.
     """)
 
+# Input provenance: distinguish a fetched value, a known fallback, and an
+# edited value. A number equal to its default cannot be distinguished from an
+# unchanged field by Streamlit; the label therefore says "source/default".
+def source_status(current, default, source_label, source_is_fallback):
+    if abs(float(current) - float(default)) > 1e-8:
+        return "Manual override"
+    return "Fallback / verify" if source_is_fallback else "Source/default"
+
+beta_fallback = "offline" in beta_source.lower() or "fallback" in beta_source.lower()
+spread_fallback = "fallback" in spread_source.lower()
+bond_fallback = "fallback" in bond_source.lower()
+tax_fallback = "fallback" in tax_source.lower() or tax_country not in tax_rates
+
+source_rows = [
+    ("Industry beta", f"{beta:.2f}", source_status(beta, selected_beta, beta_source, beta_fallback), beta_source),
+    ("Statutory tax rate", f"{tax_pct:.2f}%", source_status(tax_pct, default_tax, tax_source, tax_fallback), tax_source),
+    ("U.S. 10Y yield", f"{us_yield_pct:.2f}%", source_status(us_yield_pct, us_yield_default, bond_source, bond_fallback), bond_source),
+    (f"{country} 10Y yield", f"{foreign_yield_pct:.2f}%", source_status(foreign_yield_pct, foreign_yield_default, bond_source, bond_fallback or country not in bond_yields), bond_source),
+    ("U.S. BBB spread", f"{us_spread_pct:.2f}%", source_status(us_spread_pct, spread_default, spread_source, spread_fallback), spread_source),
+    (f"{currency} BBB spread", f"{result['Foreign BBB spread']:.2%}", "Manual override" if use_foreign_override else "Model-derived", "Foreign spread override" if use_foreign_override else "USD spread × FX gross-rate factor"),
+    ("Equity risk premium", f"{erp_pct:.2f}%", "User assumption", "Assignment default / editable"),
+    ("Debt share", f"{debt_pct:.0f}%", "User assumption", "Assignment default / editable"),
+]
+st.markdown('<div class="section-label">06 / Input transparency</div>', unsafe_allow_html=True)
+st.dataframe(pd.DataFrame(source_rows, columns=["Input", "Used value", "Status", "Source / method"]),
+             hide_index=True, use_container_width=True)
+if any(r[2] == "Fallback / verify" for r in source_rows):
+    st.warning("Some inputs use fallback or illustrative defaults. Verify these against the linked sources or enter current values before using the results in an assignment.")
+st.caption("Source/default means the field matches the fetched or fallback default; manual changes are flagged when they differ. Fetching a page does not guarantee the figure is current. Source data is cached up to 24 hours.")
+
 with st.expander("Data sources, freshness and manual override status"):
     st.markdown(f"""
     - **Industry unlevered beta:** {beta_source}. [Damodaran data]({BETAS_URL})
@@ -341,10 +400,10 @@ with st.expander("Data sources, freshness and manual override status"):
     - **10-year government yields:** {bond_source}. [Trading Economics]({TE_URL})
     - **Statutory tax rate:** {tax_source}. [OECD Corporate Tax Statistics 2024]({OECD_URL})
     """)
-    st.caption("Data is cached for 24 hours. Source layouts can change; inspect the source links and use manual overrides if a live parser fails. Any fallback values are identified above and should be verified before submission.")
+    st.caption("Data is cached for 24 hours. Source layouts can change; inspect the source links and use manual overrides if a parser fails. Fallback values must be verified before submission.")
 
 # All-industry sensitivity / comparison at same financing and market assumptions
-st.markdown('<div class="section-label">04 / Industry comparison</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-label">05 / Industry comparison</div>', unsafe_allow_html=True)
 comparison = beta_df.copy()
 comparison["Levered beta"] = comparison["Unlevered beta"] * (1 + (1-tax) * debt_weight/(1-debt_weight))
 comparison["USD cost of equity"] = us_rf + comparison["Levered beta"] * erp
